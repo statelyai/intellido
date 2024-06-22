@@ -5,17 +5,92 @@
  */
 'use client';
 
-import { SVGProps, useEffect, useState } from 'react';
+import { SVGProps, useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { useCompletion } from '@ai-sdk/react';
-import { useActorRef, useSelector } from '@xstate/react';
-import { AgentPlan, createAgent } from '@statelyai/agent';
-import { openai } from '@ai-sdk/openai';
-import { z } from 'zod';
+import { useActorRef, useMachine, useSelector } from '@xstate/react';
+import { AgentPlan } from '@statelyai/agent';
 import { Todo, todosMachine } from './todosMachine';
+import { AnyEventObject, AnyMachineSnapshot, createMachine } from 'xstate';
+import { Checkbox } from './ui/checkbox';
+import clsx from 'clsx';
+import { Input } from './ui/input';
+import { Label } from './ui/label';
+import { Textarea } from './ui/textarea';
+
+const magicMachine = createMachine({
+  initial: 'idle',
+  states: {
+    idle: {
+      on: {
+        submit: 'submitting',
+      },
+    },
+    submitting: {
+      on: {
+        submitted: 'idle',
+      },
+    },
+  },
+});
+
+export function Magic(props: {
+  state: AnyMachineSnapshot;
+  onEvent: (event: AnyEventObject) => void;
+}) {
+  const [state, send] = useMachine(magicMachine);
+
+  return (
+    <form
+      onSubmit={async (ev) => {
+        send({ type: 'submit' });
+        ev.preventDefault();
+        // get prompt from FormData
+        const formData = new FormData(ev.target);
+        const prompt = formData.get('prompt');
+
+        const res = await fetch('/api/decision', {
+          body: JSON.stringify({
+            state: props.state,
+            goal: prompt,
+          }),
+          method: 'post',
+        });
+
+        const data = (await res.json()) as { plan: AgentPlan<any> };
+
+        console.log(data);
+
+        props.onEvent(data.plan.nextEvent);
+        send({ type: 'submitted' });
+      }}
+    >
+      <Input
+        name="prompt"
+        disabled={state.matches('submitting')}
+        className="text-2xl p-8"
+        placeholder="✨ What would you like to do?"
+      />
+      {/* <Button type="submit" disabled={state.matches('submitting')}>
+        {state.matches('submitting') ? 'Submitting...' : 'Submit'}
+      </Button> */}
+    </form>
+  );
+}
 
 export function Todos() {
-  const todosActor = useActorRef(todosMachine);
+  const todosActor = useActorRef(todosMachine, {
+    input: {
+      todos: [
+        {
+          id: 'todo-1',
+          title: 'Finish React Summit talk',
+          content: 'Need to record my demos in case they fail',
+          completed: false,
+        },
+      ],
+    },
+  });
   const todos = useSelector(todosActor, (state) => state.context.todos);
   const selectedTodo = useSelector(todosActor, (state) =>
     state.context.todos.find((todo) => todo.id === state.context.selectedTodo)
@@ -24,66 +99,85 @@ export function Todos() {
   return (
     <div className="flex h-screen w-full flex-col items-center justify-center bg-gray-100 dark:bg-gray-950">
       <div className="w-full max-w-4xl space-y-8 rounded-lg bg-white p-8 shadow-lg dark:bg-gray-800">
-        <button
-          onClick={async () => {
-            const res = await fetch('/api/decision', {
-              body: JSON.stringify({
-                state: {},
-                goal: 'I need to eat a stroopwafel',
-              }),
-              method: 'post',
-            });
-
-            const data = (await res.json()) as { plan: AgentPlan<any> };
-
-            console.log(data);
-
-            todosActor.send(data.plan.nextEvent);
-          }}
-        >
-          asdf
-        </button>
-        <div>
-          <h1 className="text-3xl font-bold">Todo App</h1>
-          <p className="text-gray-500 dark:text-gray-400">
-            Manage your tasks with ease.
-          </p>
-        </div>
+        <Magic
+          state={todosActor.getSnapshot()}
+          onEvent={(ev) => todosActor.send(ev as any)}
+        />
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
           <div>
             <h2 className="mb-4 text-xl font-bold">Todos</h2>
-            <div className="space-y-4">
+            <div
+              className="space-y-4"
+              style={{
+                maxHeight: '50vh',
+                overflowY: 'auto',
+              }}
+            >
               {todos.map((todo) => (
                 <div
                   key={todo.id}
-                  className="rounded-lg bg-gray-50 p-4 shadow-sm transition-all hover:bg-gray-100 dark:bg-gray-900 dark:hover:bg-gray-800"
+                  className={clsx(
+                    'rounded-lg bg-gray-50 p-4 shadow-sm transition-all hover:bg-gray-100 dark:bg-gray-900 dark:hover:bg-gray-700 flex flex-row gap-2 border-2 items-baseline',
+                    {
+                      'line-through': todo.completed,
+                      'opacity-50': todo.completed,
+                      'border-blue-500': selectedTodo?.id === todo.id,
+                      'border-transparent': selectedTodo?.id !== todo.id,
+                    }
+                  )}
+                  onClick={() =>
+                    todosActor.send({
+                      type: 'todo.select',
+                      todoId: todo.id,
+                    })
+                  }
                 >
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-lg font-medium">{todo.title}</h3>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() =>
-                        todosActor.send({
-                          type: 'todo.select',
-                          todoId: todo.id,
-                        })
-                      }
-                    >
-                      <FilePenIcon className="h-5 w-5" />
-                      <span className="sr-only">Edit</span>
-                    </Button>
+                  {' '}
+                  <Checkbox
+                    id={`todo-${todo.id}`}
+                    checked={todo.completed}
+                    onCheckedChange={(x) => {
+                      todosActor.send({
+                        type: 'todo.toggle',
+                        todoId: todo.id,
+                      });
+                    }}
+                  />
+                  <div className="flex flex-col">
+                    <h3 className="text-lg font-medium">
+                      <span>{todo.title}</span>
+                    </h3>
+
+                    <p className="text-gray-500 dark:text-gray-400">
+                      {todo.content}
+                    </p>
                   </div>
-                  <p className="text-gray-500 dark:text-gray-400">
-                    {todo.content}
-                  </p>
                 </div>
               ))}
             </div>
           </div>
-          <div>{selectedTodo && <TodoDescription />}</div>
+          <div>
+            {selectedTodo && (
+              <EditTodo
+                todo={selectedTodo}
+                onUpdateTodo={(updatedTodo) => {
+                  todosActor.send({
+                    type: 'todo.update',
+                    todo: updatedTodo,
+                  });
+                }}
+                onDeleteTodo={() => {
+                  todosActor.send({
+                    type: 'todo.delete',
+                    todoId: selectedTodo.id,
+                  });
+                }}
+                key={selectedTodo.id}
+              />
+            )}
+          </div>
         </div>
-        <button
+        <Button
           onClick={() => {
             todosActor.send({
               type: 'todo.add',
@@ -95,162 +189,53 @@ export function Todos() {
           }}
         >
           Add todo
-        </button>
-        <div className="flex justify-end">
-          {/* <Button onClick={handleGenerateRandomTodo}>
-            Generate Random Todo
-          </Button> */}
-        </div>
+        </Button>
       </div>
     </div>
   );
 }
 
-export function Todos2() {
-  const [todos, setTodos] = useState([
-    {
-      id: 1,
-      title: 'Finish project proposal',
-      content: 'Write up the details for the new product launch',
-    },
-    {
-      id: 2,
-      title: 'Schedule team meeting',
-      content: 'Discuss progress and next steps',
-    },
-    {
-      id: 3,
-      title: 'Research new design trends',
-      content: 'Look into the latest UI/UX best practices',
-    },
-  ]);
-  const [selectedTodo, setSelectedTodo] = useState<Todo | null>(null);
-  const [newTitle, setNewTitle] = useState('');
-  const [newContent, setNewContent] = useState('');
-  const handleEditTodo = (todo: Todo) => {
-    setSelectedTodo(todo);
-    setNewTitle(todo.title);
-    setNewContent(todo.content);
-  };
-  const handleUpdateTodo = () => {
-    const updatedTodos = todos.map((todo) => {
-      if (todo.id === selectedTodo?.id) {
-        return { ...todo, title: newTitle, content: newContent };
-      }
-      return todo;
-    });
-    setTodos(updatedTodos);
-    setSelectedTodo(null);
-    setNewTitle('');
-    setNewContent('');
-  };
-  const handleGenerateRandomTodo = () => {
-    const randomTitle = `Todo ${todos.length + 1}`;
-    const randomContent = `This is a randomly generated todo with some sample content.`;
-    const newTodo = {
-      id: todos.length + 1,
-      title: randomTitle,
-      content: randomContent,
-    };
-    setTodos([...todos, newTodo]);
-  };
+function EditTodo(props: {
+  todo: Todo;
+  onUpdateTodo: (todo: Todo) => void;
+  onDeleteTodo: () => void;
+}) {
   return (
-    <div className="flex h-screen w-full flex-col items-center justify-center bg-gray-100 dark:bg-gray-950">
-      <button
-        onClick={() => {
-          fetch('/api/decision', {
-            body: JSON.stringify({
-              state: {},
-            }),
-            method: 'post',
-          })
-            .then((res) => res.json())
-            .then(console.log);
-        }}
-      >
-        asdf
-      </button>
-      <div className="w-full max-w-4xl space-y-8 rounded-lg bg-white p-8 shadow-lg dark:bg-gray-800">
+    <div>
+      <h2 className="mb-4 text-xl font-bold">Edit Todo</h2>
+      <div className="space-y-4">
         <div>
-          <h1 className="text-3xl font-bold">Todo App</h1>
-          <p className="text-gray-500 dark:text-gray-400">
-            Manage your tasks with ease.
-          </p>
+          <Label htmlFor="title">Title</Label>
+          <Input
+            id="title"
+            defaultValue={props.todo.title}
+            onBlur={(ev) => {
+              props.onUpdateTodo({
+                ...props.todo,
+                title: ev.target.value,
+              });
+            }}
+          />
         </div>
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-          <div>
-            <h2 className="mb-4 text-xl font-bold">Todos</h2>
-            <div className="space-y-4">
-              {todos.map((todo) => (
-                <div
-                  key={todo.id}
-                  className="rounded-lg bg-gray-50 p-4 shadow-sm transition-all hover:bg-gray-100 dark:bg-gray-900 dark:hover:bg-gray-800"
-                >
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-lg font-medium">{todo.title}</h3>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => handleEditTodo(todo)}
-                    >
-                      <FilePenIcon className="h-5 w-5" />
-                      <span className="sr-only">Edit</span>
-                    </Button>
-                  </div>
-                  <p className="text-gray-500 dark:text-gray-400">
-                    {todo.content}
-                  </p>
-                </div>
-              ))}
-            </div>
-          </div>
-          <div>{selectedTodo && <TodoDescription />}</div>
+        <div>
+          <Label htmlFor="content">Content</Label>
+          <TodoContent
+            todo={props.todo}
+            onUpdateContent={(content) => {
+              props.onUpdateTodo({
+                ...props.todo,
+                content,
+              });
+            }}
+          />
         </div>
-        <div className="flex justify-end">
-          <Button onClick={handleGenerateRandomTodo}>
-            Generate Random Todo
-          </Button>
-        </div>
+        <Button variant="destructive" size="sm" onClick={props.onDeleteTodo}>
+          Delete todo item
+        </Button>
       </div>
     </div>
   );
 }
-
-// function EditTodo() {
-//   const { completion, input, handleInputChange, handleSubmit } = useCompletion({
-//     api: '/api/completion',
-//   });
-//   const [content, setContent] = useState('');
-
-//   return (
-//     <div>
-//       <h2 className="mb-4 text-xl font-bold">Edit Todo</h2>
-//       <div className="space-y-4">
-//         <div>
-//           <Label htmlFor="title">Title</Label>
-//           <Input
-//             id="title"
-//             value={newTitle}
-//             onChange={(e) => setNewTitle(e.target.value)}
-//           />
-//         </div>
-//         <div>
-//           <Label htmlFor="content">Content</Label>
-//           <Textarea
-//             id="content"
-//             value={completion}
-//             // onChange={(e) => setNewContent(e.target.value)}
-//             rows={4}
-//           />
-//           <Button onClick={handleInputChange}>asdf</Button>
-//         </div>
-//         <div className="flex justify-end">
-//           <Button onClick={handleUpdateTodo}>Update</Button>
-//         </div>
-//       </div>
-//     </div>
-//   );
-// }
 
 function FilePenIcon(props: SVGProps<SVGSVGElement>) {
   return (
@@ -273,21 +258,48 @@ function FilePenIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
-function TodoDescription() {
-  const { completion, input, handleInputChange, handleSubmit } = useCompletion({
+function TodoContent(props: {
+  todo: Todo;
+  onUpdateContent: (content: string) => void;
+}) {
+  const {
+    completion,
+    input,
+    setInput,
+    handleInputChange,
+    handleSubmit,
+    isLoading,
+  } = useCompletion({
     api: '/api/completion',
+    onFinish: (_, completion) => {
+      props.onUpdateContent(completion);
+    },
   });
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    setInput(
+      'Add very brief, short content for this todo item: ' + props.todo.title
+    );
+  }, [props.todo.title]);
 
   return (
-    <form onSubmit={handleSubmit} className="text-black">
-      <input
-        name="prompt"
-        value={input}
-        onChange={handleInputChange}
-        id="input"
+    <form onSubmit={handleSubmit}>
+      <Textarea
+        id="content"
+        defaultValue={props.todo.content}
+        value={completion}
+        rows={4}
+        ref={ref}
       />
-      <button type="submit">Submit</button>
-      <textarea value={completion} />
+      <Button
+        type="submit"
+        className="p-2 transition-opacity"
+        variant="ghost"
+        disabled={isLoading}
+      >
+        {isLoading ? '✨ Generating...' : '✨ Generate'}
+      </Button>
     </form>
   );
 }

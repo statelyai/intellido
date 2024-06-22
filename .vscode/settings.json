@@ -1,0 +1,12 @@
+{
+  "presentation-mode.configBackup": {
+    "editor.fontSize": "undefined",
+    "terminal.integrated.fontSize": "undefined",
+    "editor.matchBrackets": "undefined",
+    "editor.minimap.enabled": "undefined",
+    "editor.scrollbar.verticalScrollbarSize": "undefined",
+    "workbench.activityBar.visible": "undefined",
+    "workbench.statusBar.visible": "undefined",
+    "window.zoomLevel": "undefined"
+  }
+}
